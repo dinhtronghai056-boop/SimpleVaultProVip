@@ -1,0 +1,14 @@
+name: SimpleVaultPro
+version: 3.0
+main: me.simplevault.SimpleVaultPro
+api-version: 1.20
+
+commands:
+  kho:
+    description: Mo kho
+    usage: /kho
+    permission: kho.use
+
+permissions:
+  kho.use:
+    default: true
