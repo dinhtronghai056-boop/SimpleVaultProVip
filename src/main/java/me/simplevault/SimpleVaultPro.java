@@ -3,12 +3,12 @@ package me.simplevault;
 import org.bukkit.*;
 import org.bukkit.command.*;
 import org.bukkit.configuration.file.FileConfiguration;
-import org.bukkit.enchantments.Enchantment;
-import org.bukkit.entity.Player;
+import org.bukkit.entity.*;
 import org.bukkit.event.*;
+import org.bukkit.event.block.Action;
 import org.bukkit.event.block.BlockBreakEvent;
 import org.bukkit.event.inventory.InventoryClickEvent;
-import org.bukkit.event.player.PlayerPickupItemEvent;
+import org.bukkit.event.player.*;
 import org.bukkit.inventory.*;
 import org.bukkit.inventory.meta.ItemMeta;
 import org.bukkit.plugin.java.JavaPlugin;
@@ -17,21 +17,31 @@ import java.util.*;
 
 public class SimpleVaultPro extends JavaPlugin implements Listener {
 
-    private Map<UUID, Map<Material, Long>> vault = new HashMap<>();
+    private final Map<UUID, Map<Material, Long>> vault = new HashMap<>();
+    private final Map<UUID, Set<Material>> autoCollect = new HashMap<>();
+    private final Map<UUID, Long> lastClick = new HashMap<>();
+
+    private final String GUI_TITLE = "§6Kho Cá Nhân";
 
     @Override
     public void onEnable() {
         saveDefaultConfig();
         loadData();
-        getServer().getPluginManager().registerEvents(this, this);
+        Bukkit.getPluginManager().registerEvents(this, this);
+
+        // Auto save mỗi 5 phút
+        Bukkit.getScheduler().runTaskTimer(this, this::saveData, 6000, 6000);
+
+        getLogger().info("SimpleVaultPro enabled!");
     }
 
     @Override
     public void onDisable() {
         saveData();
+        getLogger().info("SimpleVaultPro disabled!");
     }
 
-    // ===== COMMAND =====
+    // ================= COMMAND =================
     @Override
     public boolean onCommand(CommandSender sender, Command cmd, String label, String[] args) {
 
@@ -39,52 +49,66 @@ public class SimpleVaultPro extends JavaPlugin implements Listener {
         Player p = (Player) sender;
 
         if (cmd.getName().equalsIgnoreCase("kho")) {
+
+            if (!p.hasPermission("kho.use")) {
+                p.sendMessage("§cBạn không có quyền dùng lệnh này!");
+                return true;
+            }
+
             openGUI(p);
         }
-
         return true;
     }
 
-    // ===== GUI =====
+    // ================= GUI =================
     private void openGUI(Player p) {
 
-        Inventory inv = Bukkit.createInventory(null, 54, "Kho Ca Nhan");
-
-        Map<Material, Long> data = vault.getOrDefault(p.getUniqueId(), new HashMap<>());
+        Inventory inv = Bukkit.createInventory(null, 54, GUI_TITLE);
+        Map<Material, Long> data =
+                vault.computeIfAbsent(p.getUniqueId(), k -> new HashMap<>());
 
         for (Material mat : data.keySet()) {
+
+            long amount = data.get(mat);
+            if (amount <= 0) continue;
 
             ItemStack item = new ItemStack(mat);
             ItemMeta meta = item.getItemMeta();
 
             meta.setDisplayName("§e" + mat.name());
-            meta.setLore(Arrays.asList("§7So luong: §a" + data.get(mat)));
-            item.setItemMeta(meta);
+            meta.setLore(Arrays.asList(
+                    "§7Số lượng: §a" + amount,
+                    "§fLeft Click: Rút 64",
+                    "§fShift Click: Rút tất cả"
+            ));
 
+            item.setItemMeta(meta);
             inv.addItem(item);
         }
 
         p.openInventory(inv);
     }
 
-    // ===== CLICK GUI =====
     @EventHandler
     public void onClick(InventoryClickEvent e) {
 
-        if (!e.getView().getTitle().equals("Kho Ca Nhan")) return;
-
+        if (!e.getView().getTitle().equals(GUI_TITLE)) return;
         e.setCancelled(true);
 
+        if (!(e.getWhoClicked() instanceof Player)) return;
         Player p = (Player) e.getWhoClicked();
+
         ItemStack item = e.getCurrentItem();
-        if (item == null) return;
+        if (item == null || item.getType() == Material.AIR) return;
 
         Material mat = item.getType();
-        Map<Material, Long> data = vault.getOrDefault(p.getUniqueId(), new HashMap<>());
+        Map<Material, Long> data =
+                vault.computeIfAbsent(p.getUniqueId(), k -> new HashMap<>());
 
         long amount = data.getOrDefault(mat, 0L);
+        if (amount <= 0) return;
 
-        if (e.isLeftClick()) {
+        if (e.isLeftClick() && !e.isShiftClick()) {
             long give = Math.min(64, amount);
             p.getInventory().addItem(new ItemStack(mat, (int) give));
             data.put(mat, amount - give);
@@ -95,75 +119,116 @@ public class SimpleVaultPro extends JavaPlugin implements Listener {
             data.put(mat, 0L);
         }
 
-        vault.put(p.getUniqueId(), data);
         openGUI(p);
     }
 
-    // ===== CLICK PHẢI CẤT =====
+    // ================= DOUBLE RIGHT CLICK TO TOGGLE =================
     @EventHandler
     public void onRightClick(PlayerInteractEvent e) {
 
-        if (e.getAction().toString().contains("RIGHT_CLICK")) {
+        if (e.getAction() != Action.RIGHT_CLICK_AIR &&
+            e.getAction() != Action.RIGHT_CLICK_BLOCK) return;
 
-            Player p = e.getPlayer();
-            ItemStack item = p.getInventory().getItemInMainHand();
+        Player p = e.getPlayer();
+        ItemStack item = p.getInventory().getItemInMainHand();
 
-            if (item == null) return;
-            if (item.getType().name().contains("SHULKER_BOX")) return;
+        if (item == null || item.getType() == Material.AIR) return;
 
-            Material mat = item.getType();
+        UUID uuid = p.getUniqueId();
+        Material mat = item.getType();
 
-            if (!isOre(mat)) return;
+        Set<Material> list =
+                autoCollect.computeIfAbsent(uuid, k -> new HashSet<>());
 
-            Map<Material, Long> data = vault.getOrDefault(p.getUniqueId(), new HashMap<>());
+        long now = System.currentTimeMillis();
 
-            long current = data.getOrDefault(mat, 0L);
-            data.put(mat, current + item.getAmount());
+        if (lastClick.containsKey(uuid)
+                && now - lastClick.get(uuid) < 1500
+                && list.contains(mat)) {
 
-            p.getInventory().setItemInMainHand(null);
-            vault.put(p.getUniqueId(), data);
+            list.remove(mat);
+            p.sendMessage("§cĐã tắt hút: §e" + mat.name());
+            lastClick.remove(uuid);
+            return;
         }
+
+        list.add(mat);
+        p.sendMessage("§aĐã bật hút: §e" + mat.name());
+        lastClick.put(uuid, now);
     }
 
-    // ===== HÚT QUẶNG =====
+    // ================= HÚT KHI ĐÀO QUẶNG =================
     @EventHandler
     public void onBreak(BlockBreakEvent e) {
 
         Player p = e.getPlayer();
-        Material mat = e.getBlock().getType();
-
-        if (!isOre(mat)) return;
         if (p.getGameMode() != GameMode.SURVIVAL) return;
 
-        Map<Material, Long> data = vault.getOrDefault(p.getUniqueId(), new HashMap<>());
-        long current = data.getOrDefault(mat, 0L);
+        Set<Material> list =
+                autoCollect.getOrDefault(p.getUniqueId(), new HashSet<>());
 
-        int amount = 1;
+        Collection<ItemStack> drops =
+                e.getBlock().getDrops(p.getInventory().getItemInMainHand());
 
-        if (p.getInventory().getItemInMainHand().containsEnchantment(Enchantment.LOOT_BONUS_BLOCKS)) {
-            int lvl = p.getInventory().getItemInMainHand().getEnchantmentLevel(Enchantment.LOOT_BONUS_BLOCKS);
-            amount += lvl;
+        Map<Material, Long> data =
+                vault.computeIfAbsent(p.getUniqueId(), k -> new HashMap<>());
+
+        boolean collected = false;
+
+        for (ItemStack drop : drops) {
+
+            if (!list.contains(drop.getType())) continue;
+
+            long current = data.getOrDefault(drop.getType(), 0L);
+            data.put(drop.getType(), current + drop.getAmount());
+            collected = true;
         }
 
-        data.put(mat, current + amount);
-        vault.put(p.getUniqueId(), data);
-
-        e.setDropItems(false);
+        if (collected) {
+            e.setDropItems(false);
+            e.setExpToDrop(0);
+        }
     }
 
-    // ===== CHỈ KHOÁNG SẢN =====
-    private boolean isOre(Material m) {
-        return m.name().contains("ORE") || m == Material.DIAMOND || m == Material.EMERALD;
+    // ================= HÚT KHI NHẶT ITEM =================
+    @EventHandler
+    public void onPickup(PlayerAttemptPickupItemEvent e) {
+
+        Player p = e.getPlayer();
+        ItemStack item = e.getItem().getItemStack();
+
+        Set<Material> list =
+                autoCollect.getOrDefault(p.getUniqueId(), new HashSet<>());
+
+        if (!list.contains(item.getType())) return;
+
+        Map<Material, Long> data =
+                vault.computeIfAbsent(p.getUniqueId(), k -> new HashMap<>());
+
+        long current = data.getOrDefault(item.getType(), 0L);
+        data.put(item.getType(), current + item.getAmount());
+
+        e.setCancelled(true);
+        e.getItem().remove();
     }
 
-    // ===== SAVE =====
+    // ================= SAVE / LOAD =================
     private void saveData() {
 
         FileConfiguration config = getConfig();
+        config.set("data", null);
+        config.set("auto", null);
 
         for (UUID uuid : vault.keySet()) {
             for (Material mat : vault.get(uuid).keySet()) {
-                config.set("data." + uuid + "." + mat.name(), vault.get(uuid).get(mat));
+                config.set("data." + uuid + "." + mat.name(),
+                        vault.get(uuid).get(mat));
+            }
+        }
+
+        for (UUID uuid : autoCollect.keySet()) {
+            for (Material mat : autoCollect.get(uuid)) {
+                config.set("auto." + uuid + "." + mat.name(), true);
             }
         }
 
@@ -172,19 +237,41 @@ public class SimpleVaultPro extends JavaPlugin implements Listener {
 
     private void loadData() {
 
-        if (!getConfig().contains("data")) return;
+        if (getConfig().contains("data")) {
 
-        for (String uuidStr : getConfig().getConfigurationSection("data").getKeys(false)) {
+            for (String uuidStr :
+                    getConfig().getConfigurationSection("data").getKeys(false)) {
 
-            UUID uuid = UUID.fromString(uuidStr);
-            Map<Material, Long> data = new HashMap<>();
+                UUID uuid = UUID.fromString(uuidStr);
+                Map<Material, Long> data = new HashMap<>();
 
-            for (String mat : getConfig().getConfigurationSection("data." + uuidStr).getKeys(false)) {
-                data.put(Material.valueOf(mat),
-                        getConfig().getLong("data." + uuidStr + "." + mat));
+                for (String mat :
+                        getConfig().getConfigurationSection("data." + uuidStr).getKeys(false)) {
+
+                    data.put(Material.valueOf(mat),
+                            getConfig().getLong("data." + uuidStr + "." + mat));
+                }
+
+                vault.put(uuid, data);
             }
+        }
 
-            vault.put(uuid, data);
+        if (getConfig().contains("auto")) {
+
+            for (String uuidStr :
+                    getConfig().getConfigurationSection("auto").getKeys(false)) {
+
+                UUID uuid = UUID.fromString(uuidStr);
+                Set<Material> list = new HashSet<>();
+
+                for (String mat :
+                        getConfig().getConfigurationSection("auto." + uuidStr).getKeys(false)) {
+
+                    list.add(Material.valueOf(mat));
+                }
+
+                autoCollect.put(uuid, list);
+            }
         }
     }
 }
