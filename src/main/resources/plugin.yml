@@ -1,7 +1,7 @@
 name: SimpleVaultPro
 version: 3.0
 main: me.simplevault.SimpleVaultPro
-api-version: 1.20
+api-version: 1.21
 
 commands:
   kho:
